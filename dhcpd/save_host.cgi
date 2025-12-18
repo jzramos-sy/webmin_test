@@ -5,6 +5,43 @@
 require './dhcpd-lib.pl';
 require './params-lib.pl';
 &ReadParse();
+
+# --- CUSTOM CODE START: Logic for Tempo & Activate Buttons ---
+# This runs BEFORE validation to modify the data based on your buttons
+
+if ($in{'tempo_disconnect'}) {
+    # 1. Get Today's Date
+    my ($sec,$min,$hour,$mday,$mon,$year) = localtime(time());
+    $year += 1900; 
+    $mon += 1;
+    my $datetoday = sprintf("%04d-%02d-%02d", $year, $mon, $mday);
+
+    # 2. Append Date to Name (e.g., "Modem1" -> "Modem1-Tempo-2025-12-18")
+    if ($in{'name'} !~ /Tempo/) {
+        $in{'name'} = $in{'name'} . "-Tempo-" . $datetoday;
+    }
+
+    # 3. Backup MAC to Description and Clear the Hardware Field
+    # This effectively "disconnects" them from DHCP
+    if ($in{'hardware'}) {
+        $in{'desc'} = "MAC_BACKUP:" . $in{'hardware'} . " " . $in{'desc'};
+    }
+    $in{'hardware'} = ""; # Clear the MAC
+    $in{'delete'} = 0;    # Ensure we save, not delete
+}
+elsif ($in{'activate_host'}) {
+    # 1. Find the hidden MAC in the description
+    if ($in{'desc'} =~ /MAC_BACKUP:([0-9a-fA-F:]+)/) {
+        $in{'hardware'} = $1; # Restore MAC
+        $in{'desc'} =~ s/MAC_BACKUP:$1\s*//; # Clean up description
+    }
+
+    # 2. Fix the Name (Remove "-Tempo-Date")
+    $in{'name'} =~ s/-Tempo-\d{4}-\d{2}-\d{2}//;
+    $in{'delete'} = 0;
+}
+# --- CUSTOM CODE END ---
+
 &lock_all_files();
 ($par, $host, $indent, $npar, $nindent) = get_branch('hst', $in{'new'});
 
@@ -159,6 +196,31 @@ else {
 &unlock_all_files();
 &webmin_log($in{'delete'} ? 'delete' : $in{'new'} ? 'create' : 'modify',
 	    'host', $host->{'values'}->[0], \%in);
+
+# --- CUSTOM CODE START: Trigger External Speed Script ---
+# This passes the IP, MAC, and TEMPO (Speed) to your Linux script
+# The script will handle the actual 'tc' commands or firewall blocks
+
+my $cmd_ip = $in{'fixed-address'};
+my $cmd_mac = $in{'hardware'};
+my $cmd_tempo = $in{'tempo'};
+
+if ($in{'delete'}) {
+    # If deleting, trigger disconnect
+    system("/usr/local/bin/manage_modem.sh disconnect '$cmd_ip' &");
+} 
+elsif ($cmd_ip) {
+   # If MAC is empty (Tempo Disconnect was clicked), ensure disconnect
+   if (!$cmd_mac) {
+       system("/usr/local/bin/manage_modem.sh disconnect '$cmd_ip' &");
+   } else {
+       # Otherwise connect/update with new speed
+       # Format: manage_modem.sh connect [IP] [MAC] [SPEED]
+       system("/usr/local/bin/manage_modem.sh connect '$cmd_ip' '$cmd_mac' '$cmd_tempo' &");
+   }
+}
+# --- CUSTOM CODE END ---
+
 if ($in{'ret'} eq "group") {
 	$retparms = "sidx=$in{'sidx'}&uidx=$in{'uidx'}&idx=$in{'gidx'}";
 	}
